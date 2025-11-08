@@ -1,4 +1,4 @@
-name: VPS
+name: Windows Setup
 on:
   workflow_dispatch:
 jobs:
@@ -6,71 +6,60 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 10080
     steps:
-      - name: Configure
+      - name: Configure System
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
-          netsh advfirewall firewall delete rule name="VPS"
-          netsh advfirewall firewall add rule name="VPS" dir=in action=allow protocol=TCP localport=3389
-          netsh advfirewall firewall add rule name="VPS-WEB" dir=in action=allow protocol=TCP localport=80
-          netsh advfirewall firewall add rule name="VPS-HTTPS" dir=in action=allow protocol=TCP localport=443
+          netsh advfirewall firewall add rule name="Remote" dir=in action=allow protocol=TCP localport=3389
+          netsh advfirewall firewall add rule name="Web" dir=in action=allow protocol=TCP localport=80
           Restart-Service -Name TermService -Force
 
-      - name: Create User
+      - name: Create Account
         run: |
           $password = "admin@123"
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          if (-not (Get-LocalUser -Name "VPSUSER" -ErrorAction SilentlyContinue)) {
-              New-LocalUser -Name "VPSUSER" -Password $securePass -AccountNeverExpires
-          }
-          Add-LocalGroupMember -Group "Administrators" -Member "VPSUSER"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "VPSUSER"
-          echo "CREDS=User: VPSUSER | Password: $password" >> $env:GITHUB_ENV
+          New-LocalUser -Name "User" -Password $securePass -AccountNeverExpires -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Administrators" -Member "User"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "User"
 
-      - name: Setup Web
+      - name: Install Services
         run: |
           Enable-WindowsOptionalFeature -Online -FeatureName IIS-WebServerRole -All
           Enable-WindowsOptionalFeature -Online -FeatureName IIS-WebServer -All
           Start-Service -Name W3SVC
 
-      - name: Setup VPN
+      - name: Setup Network
         run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          $installerPath = "$env:TEMP\tailscale.msi"
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
-          Remove-Item $installerPath -Force
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $path = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri $url -OutFile $path
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$path`"", "/quiet", "/norestart" -Wait
+          Remove-Item $path -Force
 
-      - name: Connect VPN
+      - name: Connect Network
         run: |
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=vps-$env:GITHUB_RUN_ID
-          $tsIP = $null
-          $retries = 0
-          while (-not $tsIP -and $retries -lt 10) {
-              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=win-$env:GITHUB_RUN_ID
+          $ip = $null
+          $count = 0
+          while (-not $ip -and $count -lt 10) {
+              $ip = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
               Start-Sleep -Seconds 5
-              $retries++
+              $count++
           }
-          echo "IP=$tsIP" >> $env:GITHUB_ENV
+          echo "IP=$ip" >> $env:GITHUB_ENV
 
-      - name: Check
+      - name: Verify Connection
         run: |
-          Write-Host "IP: $env:IP"
-          $testResult = Test-NetConnection -ComputerName $env:IP -Port 3389
-          if (-not $testResult.TcpTestSucceeded) {
-              exit 1
-          }
+          Test-NetConnection -ComputerName $env:IP -Port 3389 | Out-Null
 
-      - name: Run
+      - name: Keep Alive
         run: |
-          Write-Host "=== VPS ==="
+          Write-Host "Connection Details:"
           Write-Host "IP: $env:IP"
-          Write-Host "User: VPSUSER"
-          Write-Host "Pass: admin@123"
+          Write-Host "User: User"
+          Write-Host "Password: admin@123"
           Write-Host "Web: http://$env:IP"
-          Write-Host "==========="
           while ($true) {
-              Write-Host "[$(Get-Date)] Running"
               Start-Sleep -Seconds 300
           }
